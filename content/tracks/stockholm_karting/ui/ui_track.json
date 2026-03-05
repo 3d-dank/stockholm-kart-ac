@@ -1,0 +1,20 @@
+{
+  "name": "Stockholm Karting Center",
+  "description": "Minnesota's premier outdoor kart circuit in Cokato, MN. WKA sanctioned road course — 26ft wide, sweeping banked turns, two significant elevation changes. Minnesota's only outdoor rental kart track.",
+  "tags": ["kart", "outdoor", "minnesota", "usa", "wka", "road course"],
+  "country": "USA",
+  "city": "Cokato, MN",
+  "author": "TopDog AI",
+  "version": "0.1",
+  "length": "850",
+  "width": "8",
+  "run": "clockwise",
+  "pitboxes": "8",
+  "year": 2026,
+  "url": "https://stockholmkartingcenter.com",
+  "geotags": {
+    "lat": 45.0772,
+    "lon": -94.1858,
+    "address": "13185 US Highway 12 SW, Cokato, MN 55321"
+  }
+}

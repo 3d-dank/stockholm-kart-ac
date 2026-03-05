@@ -1,0 +1,13 @@
+point_index,lat,lng,elevation_ft,elevation_m,description
+0,45.0772,-94.1858,322.1,98.18,Start/Finish
+1,45.0775,-94.184,318.8,97.17,Turn 1 Entry
+2,45.078,-94.1825,315.9,96.29,Turn 1 Apex
+3,45.0785,-94.1815,315.6,96.20,Turn 1 Exit
+4,45.079,-94.182,314.0,95.72,Back Straight Start
+5,45.0792,-94.184,319.5,97.39,Mid Back Straight
+6,45.079,-94.186,320.3,97.62,Hairpin Entry
+7,45.0785,-94.1875,321.7,98.04,Hairpin Apex
+8,45.0778,-94.188,320.3,97.64,Hairpin Exit
+9,45.0775,-94.187,322.4,98.27,Infield Section
+10,45.0772,-94.1865,321.2,97.90,Final Corner (interpolated)
+11,45.0772,-94.1858,322.1,98.18,Back to Start
