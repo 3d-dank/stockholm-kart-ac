@@ -1,406 +1,405 @@
 """
-Stockholm Karting Center — Assetto Corsa Track Mesh Builder
-Rebuilt 2026-03-06 using Blender Bezier curves for smooth geometry.
-Track layout traced from satellite imagery.
+Stockholm Karting Center — Assetto Corsa Track Builder
+v3 — Clean rewrite: no kerbs (too buggy), correct layout, pure local coords.
+
+Track: 0.65mi (1047m), 14 turns, 26ft (7.92m) wide, clockwise
+Location: 13185 US-12, Cokato MN — just east of Cokato, south of Hwy 12
+Paddock/garages on NORTH edge. Front straight runs E-W along north.
+Track extends SOUTH from front straight.
 """
 
-import bpy
-import math
-import os
+import bpy, math, os
 
-# ── CONFIG ───────────────────────────────────────────────────────────────────
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR  = os.path.join(SCRIPT_DIR, "content", "tracks", "stockholm_karting", "models")
-TRACK_WIDTH = 7.92   # 26 feet in meters
+# ── OUTPUT PATH ───────────────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "content", "tracks", "stockholm_karting", "models")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ── TRACK WAYPOINTS (local meters, X=east, Y=north) ─────────────────────────
-# Traced from satellite imagery. Counter-clockwise direction.
-# Front straight runs E-W at Y=0 (north edge). Track extends south.
-#
-# Layout:
-#   Front straight (north, E-W)
-#   → NE sweeper turning south
-#   → East side heading south
-#   → Large SE oval loop (main feature, grass infield)
-#   → Exit oval heading northwest
-#   → Center flowing S-bends
-#   → NW tight complex
-#   → West side heading back east along north
-#   → Front straight
-#
-# Each tuple: (x, y) in meters
+TRACK_WIDTH = 7.92  # 26 ft
 
+# ── TRACK CENTERLINE WAYPOINTS ────────────────────────────────────────────────
+# Local coordinates: X = east (+), Y = north (+)
+# Front straight at Y=0, track extends south (Y negative).
+# Direction: CLOCKWISE. Driving W→E along front straight.
+#
+# Layout based on satellite imagery:
+#   Front straight (N edge, W→E)
+#   T1:  Right sweeper — NE corner heading south
+#   T2:  Long east-side straight heading south
+#   T3:  Right — entering SE oval section
+#   T4:  Right — sweeping around south end of oval
+#   T5:  Right — completing oval loop
+#   T6:  Left S-bend heading northwest
+#   T7:  Right S-bend
+#   T8:  Left S-bend
+#   T9:  Right S-bend
+#   T10: Left — entering NW complex
+#   T11: Right — tight NW hairpin
+#   T12: Left
+#   T13: Right
+#   T14: Right — sweeper back onto front straight
+#
 WAYPOINTS = [
-    # Front straight (W → E)
-    (-110,   5),
-    ( -80,   5),
-    ( -40,   5),
-    (   0,   5),
-    (  40,   5),
-    (  80,   5),
-    ( 110,   5),
+    # Front straight W→E (Y=0, north edge)
+    (-130,   0),
+    ( -90,   0),
+    ( -50,   0),
+    (   0,   0),
+    (  50,   0),
+    (  90,   0),
+    ( 130,   0),
 
-    # NE corner sweeper (right turn, heading south)
-    ( 130, -10),
-    ( 140, -30),
-    ( 140, -60),
+    # T1: NE sweeper — right turn heading south
+    ( 152, -18),
+    ( 160, -45),
 
-    # East side straight (heading south)
-    ( 138, -90),
-    ( 132,-115),
+    # East side straight
+    ( 158, -80),
+    ( 154,-115),
 
-    # Oval entry — sweeping right into the oval (SE feature)
-    ( 120,-130),
-    ( 100,-148),
-    (  70,-158),
-    (  40,-162),
-    (  10,-160),
+    # T3: Oval entry — sweeping right
+    ( 140,-138),
+    ( 118,-158),
+    (  88,-172),
+    (  55,-178),
 
-    # Oval south — wrapping around the bottom (tight right)
-    ( -20,-155),
-    ( -45,-142),
-    ( -60,-125),
+    # T4/T5: Oval south — right wrap
+    (  20,-175),
+    ( -10,-167),
+    ( -35,-152),
 
-    # Oval exit — heading northwest
-    ( -60,-105),
-    ( -52, -88),
-    ( -40, -75),
+    # Oval west exit — heading north-northwest
+    ( -52,-133),
+    ( -58,-112),
+    ( -52, -92),
 
-    # Center S-bends (flowing, not tight)
-    ( -20, -65),
-    (   5, -58),
-    (  20, -50),
-    (  10, -40),
-    ( -10, -32),
+    # T6/T7: S-bends heading northwest (key visual feature)
+    ( -35, -75),
+    ( -10, -62),
+    (  15, -53),
 
-    # NW tight complex
-    ( -40, -25),
-    ( -70, -22),
-    ( -95, -18),
-    (-115, -12),
+    # T8/T9: second S-bend
+    (  18, -42),
+    (   0, -33),
+    ( -20, -27),
 
-    # Back to front straight
-    (-115,  -2),
-    (-110,   5),
+    # T10-T13: NW complex — tighter corners
+    ( -48, -22),
+    ( -75, -18),
+    (-102, -15),
+    (-125, -10),
+
+    # T14: Final right sweeper back onto front straight
+    (-138,  -4),
+    (-130,   0),  # close loop
 ]
 
-print(f"\n[Build] Stockholm Karting Center — Bezier curve method")
-print(f"[Build] Waypoints: {len(WAYPOINTS)}")
+print(f"\n[SKC Builder v3] Waypoints: {len(WAYPOINTS)}")
 
-# ── CLEAR SCENE ──────────────────────────────────────────────────────────────
+# ── CLEAR SCENE ───────────────────────────────────────────────────────────────
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete()
-for col in bpy.data.collections:
-    bpy.data.collections.remove(col)
 
-# ── MATERIALS ────────────────────────────────────────────────────────────────
-def make_mat(name, r, g, b, roughness=0.85):
-    mat = bpy.data.materials.new(name)
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+# ── MATERIALS ─────────────────────────────────────────────────────────────────
+def mat(name, r, g, b, rough=0.85):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    bsdf = m.node_tree.nodes.get("Principled BSDF")
     if bsdf:
         bsdf.inputs["Base Color"].default_value = (r, g, b, 1)
-        bsdf.inputs["Roughness"].default_value  = roughness
-    return mat
+        bsdf.inputs["Roughness"].default_value = rough
+    return m
 
-mat_asphalt  = make_mat("road_asphalt",  0.10, 0.10, 0.10, 0.9)
-mat_grass    = make_mat("grass_terrain",  0.22, 0.48, 0.17, 0.9)
-mat_kerb_r   = make_mat("kerb_red",       0.80, 0.05, 0.05, 0.7)
-mat_kerb_w   = make_mat("kerb_white",     0.92, 0.92, 0.92, 0.7)
-mat_barrier  = make_mat("barrier_concrete",0.55, 0.55, 0.55, 0.9)
-mat_pit      = make_mat("pit_surface",    0.22, 0.22, 0.22, 0.9)
+MAT_ASPHALT  = mat("road_asphalt",   0.08, 0.08, 0.08)
+MAT_PIT      = mat("pit_asphalt",    0.15, 0.15, 0.15)
+MAT_GRASS    = mat("terrain_grass",  0.20, 0.45, 0.15)
+MAT_KERB_R   = mat("kerb_red",       0.82, 0.08, 0.08, 0.6)
+MAT_KERB_W   = mat("kerb_white",     0.90, 0.90, 0.90, 0.6)
+MAT_BARRIER  = mat("barrier",        0.50, 0.50, 0.50)
+MAT_LINE     = mat("start_line",     0.95, 0.95, 0.95, 0.4)
 
-print("[Build] Materials created.")
-
-# ── BEZIER CURVE TRACK ───────────────────────────────────────────────────────
-def build_track_from_bezier(waypoints, width, name="track_surface"):
-    """Create smooth track surface using Blender Bezier curve → mesh."""
-    # Create curve object
-    curve_data = bpy.data.curves.new(name=f"{name}_curve", type='CURVE')
-    curve_data.dimensions = '2D'
-    curve_data.fill_mode  = 'NONE'
-
-    spline = curve_data.splines.new('BEZIER')
-    spline.bezier_points.add(len(waypoints) - 1)
-    spline.use_cyclic_u = True
+# ── SMOOTH BEZIER → MESH ──────────────────────────────────────────────────────
+def get_smooth_centerline(waypoints):
+    """Run waypoints through Blender Bezier spline, return evaluated (x,y) list."""
+    cd = bpy.data.curves.new("_cl_curve", 'CURVE')
+    cd.dimensions = '2D'
+    sp = cd.splines.new('BEZIER')
+    sp.bezier_points.add(len(waypoints) - 1)
+    sp.use_cyclic_u = False   # open — first == last for our closed loop
+    cd.resolution_u = 16
 
     for i, (x, y) in enumerate(waypoints):
-        bp = spline.bezier_points[i]
+        bp = sp.bezier_points[i]
         bp.co = (x, y, 0)
         bp.handle_left_type  = 'AUTO'
         bp.handle_right_type = 'AUTO'
 
-    curve_data.resolution_u = 12   # smoothness per segment
-
-    # Convert to mesh by adding bevel for width
-    # Use extrude along normals approach: create mesh manually from evaluated curve
-    curve_obj = bpy.data.objects.new(f"{name}_curve_obj", curve_data)
-    bpy.context.scene.collection.objects.link(curve_obj)
-    bpy.context.view_layer.objects.active = curve_obj
-    curve_obj.select_set(True)
-
-    # Get evaluated points
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    eval_obj  = curve_obj.evaluated_get(depsgraph)
-    eval_mesh = eval_obj.to_mesh()
-
-    # Extract centerline vertices from evaluated curve
-    center_pts = [(v.co.x, v.co.y) for v in eval_mesh.vertices]
-    eval_obj.to_mesh_clear()
-
-    # Remove curve object
-    bpy.data.objects.remove(curve_obj)
-    bpy.data.curves.remove(curve_data)
-
-    if len(center_pts) < 3:
-        print(f"  [WARN] Only {len(center_pts)} center pts — falling back to waypoints")
-        center_pts = [(x, y) for x, y in waypoints]
-
-    n = len(center_pts)
-    half_w = width / 2.0
-
-    verts  = []
-    faces  = []
-
-    # Compute normals
-    def perp_normal(pts, i):
-        a = pts[(i - 1) % len(pts)]
-        b = pts[(i + 1) % len(pts)]
-        dx = b[0] - a[0]
-        dy = b[1] - a[1]
-        length = math.sqrt(dx*dx + dy*dy) or 1.0
-        return (-dy/length, dx/length)
-
-    for i in range(n):
-        cx, cy = center_pts[i]
-        nx, ny = perp_normal(center_pts, i)
-        # Left edge (outer)
-        verts.append((cx - nx * half_w, cy - ny * half_w, 0))
-        # Right edge (inner)
-        verts.append((cx + nx * half_w, cy + ny * half_w, 0))
-
-    # Faces (quad strips)
-    for i in range(n):
-        i0 = i * 2
-        i1 = i * 2 + 1
-        i2 = ((i + 1) % n) * 2
-        i3 = ((i + 1) % n) * 2 + 1
-        faces.append((i0, i1, i3, i2))
-
-    mesh = bpy.data.meshes.new(name)
-    mesh.from_pydata(verts, [], faces)
-    mesh.update()
-
-    obj = bpy.data.objects.new(name, mesh)
+    obj = bpy.data.objects.new("_cl_obj", cd)
     bpy.context.scene.collection.objects.link(obj)
-    obj.data.materials.append(mat_asphalt)
-    return obj, center_pts
+    bpy.context.view_layer.update()
 
-print("[Build] Building track surface (Bezier method)…")
-track_obj, center_pts = build_track_from_bezier(WAYPOINTS, TRACK_WIDTH)
-n_pts = len(center_pts)
-print(f"  Track surface built: {n_pts} evaluated points")
+    dep  = bpy.context.evaluated_depsgraph_get()
+    ev   = obj.evaluated_get(dep)
+    pts  = [(v.co.x, v.co.y) for v in ev.to_mesh().vertices]
 
-# Calculate approximate length
-total_len = 0
-for i in range(n_pts):
-    a = center_pts[i]
-    b = center_pts[(i+1) % n_pts]
-    dx = b[0]-a[0]; dy = b[1]-a[1]
-    total_len += math.sqrt(dx*dx + dy*dy)
-print(f"  Approx length: {total_len:.0f}m")
+    bpy.data.objects.remove(obj)
+    bpy.data.curves.remove(cd)
+    return pts
 
-# ── PIT LANE (parallel to front straight, offset north 12m) ──────────────────
-print("[Build] Building pit lane…")
-pit_verts = [
-    (-115, 12, 0), (-115, 16, 0),
-    ( 110, 12, 0), ( 110, 16, 0),
+print("[SKC] Evaluating Bezier centerline…")
+center = get_smooth_centerline(WAYPOINTS)
+N = len(center)
+print(f"  Evaluated {N} centerline points")
+
+# Compute total length
+total_m = sum(
+    math.hypot(center[(i+1)%N][0]-center[i][0], center[(i+1)%N][1]-center[i][1])
+    for i in range(N-1)
+)
+print(f"  Estimated length: {total_m:.0f}m (target ~1047m)")
+
+# ── HELPER: perpendicular normal at point i ───────────────────────────────────
+def normal_at(pts, i):
+    n = len(pts)
+    ax, ay = pts[(i-1)%n]
+    bx, by = pts[(i+1)%n]
+    dx, dy = bx-ax, by-ay
+    L = math.hypot(dx, dy) or 1
+    return -dy/L, dx/L   # perpendicular (left side)
+
+# ── BUILD TRACK SURFACE ───────────────────────────────────────────────────────
+def build_strip(pts, width, z=0.0, name="track"):
+    hw = width / 2
+    verts, faces = [], []
+    n = len(pts)
+    for i in range(n):
+        nx, ny = normal_at(pts, i)
+        cx, cy = pts[i]
+        verts.append((cx - nx*hw, cy - ny*hw, z))   # left
+        verts.append((cx + nx*hw, cy + ny*hw, z))   # right
+    for i in range(n - 1):
+        a, b = i*2, i*2+1
+        c, d = (i+1)*2, (i+1)*2+1
+        faces.append((a, b, d, c))
+    me = bpy.data.meshes.new(name)
+    me.from_pydata(verts, [], faces)
+    me.update()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    return ob
+
+print("[SKC] Building track surface…")
+track_obj = build_strip(center, TRACK_WIDTH, z=0.0, name="track_surface")
+track_obj.data.materials.append(MAT_ASPHALT)
+
+# ── START/FINISH LINE (white stripe at first waypoint) ────────────────────────
+sf_idx = 0
+sfx, sfy = center[sf_idx]
+nx, ny = normal_at(center, sf_idx)
+tx = center[1][0] - center[0][0]; ty = center[1][1] - center[0][1]
+tl = math.hypot(tx, ty) or 1; tx /= tl; ty /= tl
+hw = TRACK_WIDTH / 2
+lw = 0.5   # half-length along track
+sv = [
+    (sfx - nx*hw - tx*lw, sfy - ny*hw - ty*lw, 0.01),
+    (sfx + nx*hw - tx*lw, sfy + ny*hw - ty*lw, 0.01),
+    (sfx + nx*hw + tx*lw, sfy + ny*hw + ty*lw, 0.01),
+    (sfx - nx*hw + tx*lw, sfy - ny*hw + ty*lw, 0.01),
 ]
-pit_faces = [(0, 1, 3, 2)]
-pit_mesh  = bpy.data.meshes.new("pit_surface")
-pit_mesh.from_pydata(pit_verts, [], pit_faces)
-pit_mesh.update()
-pit_obj = bpy.data.objects.new("pit_surface", pit_mesh)
+sme = bpy.data.meshes.new("start_line")
+sme.from_pydata(sv, [], [(0,1,2,3)]); sme.update()
+sobj = bpy.data.objects.new("start_line", sme)
+bpy.context.scene.collection.objects.link(sobj)
+sobj.data.materials.append(MAT_LINE)
+
+# ── PIT LANE (connected strip north of front straight) ────────────────────────
+print("[SKC] Building pit lane…")
+PIT_OFFSET = 10   # meters north of front straight
+pit_pts = [
+    (-130,  PIT_OFFSET),
+    ( 130,  PIT_OFFSET),
+]
+# Simple rectangular pit lane
+pw = 4.0
+pv = [
+    (-130, PIT_OFFSET - pw/2, 0),
+    (-130, PIT_OFFSET + pw/2, 0),
+    ( 130, PIT_OFFSET - pw/2, 0),
+    ( 130, PIT_OFFSET + pw/2, 0),
+]
+pf = [(0, 1, 3, 2)]
+pme = bpy.data.meshes.new("pit_lane")
+pme.from_pydata(pv, [], pf); pme.update()
+pit_obj = bpy.data.objects.new("pit_lane", pme)
 bpy.context.scene.collection.objects.link(pit_obj)
-pit_obj.data.materials.append(mat_pit)
+pit_obj.data.materials.append(MAT_PIT)
 
 # ── TERRAIN ───────────────────────────────────────────────────────────────────
-print("[Build] Building terrain…")
-SIZE = 400
-GRID = 16
-bpy.ops.mesh.primitive_grid_add(
-    x_subdivisions=GRID, y_subdivisions=GRID,
-    size=1,
-    location=(0, -80, -0.05)
-)
-terrain_obj = bpy.context.active_object
-terrain_obj.name = "terrain"
-terrain_obj.scale = (SIZE, SIZE, 1)
-bpy.ops.object.transform_apply(scale=True)
-terrain_obj.data.materials.append(mat_grass)
+print("[SKC] Building terrain…")
+bpy.ops.mesh.primitive_plane_add(size=600, location=(0, -90, -0.05))
+terrain = bpy.context.active_object
+terrain.name = "terrain"
+terrain.data.materials.append(MAT_GRASS)
 
-# ── KERBS ─────────────────────────────────────────────────────────────────────
-print("[Build] Building kerbs…")
+# ── KERBS (simple alternating red/white blocks at corners only) ───────────────
+print("[SKC] Building kerbs…")
 
-def perp_normal_pts(pts, i):
-    n = len(pts)
-    a = pts[(i-1) % n]
-    b = pts[(i+1) % n]
-    dx = b[0]-a[0]; dy = b[1]-a[1]
-    length = math.sqrt(dx*dx+dy*dy) or 1.0
-    return (-dy/length, dx/length)
-
-def local_radius(pts, i):
+def corner_radius(pts, i):
     n = len(pts)
     a = pts[(i-1)%n]; b = pts[i]; c = pts[(i+1)%n]
-    ax,ay = b[0]-a[0], b[1]-a[1]
-    bx,by = c[0]-b[0], c[1]-b[1]
-    cross = abs(ax*by - ay*bx)
-    if cross < 1e-6: return 9999
-    la = math.sqrt(ax*ax+ay*ay)
-    lb = math.sqrt(bx*bx+by*by)
-    return (la+lb)/2 / (2*math.asin(min(cross/(la*lb+1e-9), 1.0)) or 1e-9)
+    v1x, v1y = b[0]-a[0], b[1]-a[1]
+    v2x, v2y = c[0]-b[0], c[1]-b[1]
+    cross = abs(v1x*v2y - v1y*v2x)
+    l1 = math.hypot(v1x, v1y)
+    l2 = math.hypot(v2x, v2y)
+    if cross < 0.01 or l1 < 0.01 or l2 < 0.01:
+        return 9999
+    sin_a = min(cross / (l1 * l2), 1.0)
+    angle = math.asin(sin_a)
+    if angle < 0.01:
+        return 9999
+    return min(l1, l2) / (2 * math.tan(angle / 2 + 0.001))
 
-kerb_objects = []
-KERB_W   = 0.3
-KERB_H   = 0.03
-SEG_LEN  = 1.5
-half_w   = TRACK_WIDTH / 2.0
+KERB_W = 0.35
+KERB_H_TIGHT = 0.04
+KERB_H_STD   = 0.01
+KERB_SEG_LEN = 1.2
+hw = TRACK_WIDTH / 2
 
-seg_i = 0
-i = 0
-while i < n_pts:
-    r = local_radius(center_pts, i)
-    if r < 60:   # corner detected
-        side = 1 if r < 30 else 0   # tight = inside kerb raised
-        cx, cy = center_pts[i]
-        nx, ny = perp_normal_pts(center_pts, i)
+kerb_count = 0
+seg_index  = 0
+skip       = 0
 
-        for side_sign, mat in [(-1, mat_kerb_r if seg_i % 2 == 0 else mat_kerb_w),
-                                 (1,  mat_kerb_w if seg_i % 2 == 0 else mat_kerb_r)]:
-            ox = cx + side_sign * (half_w + KERB_W/2) * nx
-            oy = cy + side_sign * (half_w + KERB_W/2) * ny
+for i in range(1, N - 1):
+    if skip > 0:
+        skip -= 1
+        continue
+    r = corner_radius(center, i)
+    if r > 40:
+        continue   # not a corner
 
-            # Next point for orientation
-            nx2, ny2 = perp_normal_pts(center_pts, (i+1)%n_pts)
-            tx = center_pts[(i+1)%n_pts][0] - cx
-            ty = center_pts[(i+1)%n_pts][1] - cy
-            tl = math.sqrt(tx*tx+ty*ty) or 1.0
-            tx /= tl; ty /= tl
+    skip = 4   # skip next few to avoid overlapping kerb tiles
+    h = KERB_H_TIGHT if r < 18 else KERB_H_STD
 
-            h = KERB_H if r < 30 else 0.01
+    cx, cy = center[i]
+    nrx, nry = normal_at(center, i)
+    tx = center[min(i+1,N-1)][0] - center[i][0]
+    ty = center[min(i+1,N-1)][1] - center[i][1]
+    tl = math.hypot(tx,ty) or 1; tx/=tl; ty/=tl
 
-            kv = [
-                (ox - tx*SEG_LEN/2 - nx*KERB_W/2, oy - ty*SEG_LEN/2 - ny*KERB_W/2, 0),
-                (ox - tx*SEG_LEN/2 + nx*KERB_W/2, oy - ty*SEG_LEN/2 + ny*KERB_W/2, 0),
-                (ox + tx*SEG_LEN/2 + nx*KERB_W/2, oy + ty*SEG_LEN/2 + ny*KERB_W/2, 0),
-                (ox + tx*SEG_LEN/2 - nx*KERB_W/2, oy + ty*SEG_LEN/2 - ny*KERB_W/2, 0),
-                (ox - tx*SEG_LEN/2 - nx*KERB_W/2, oy - ty*SEG_LEN/2 - ny*KERB_W/2, h),
-                (ox - tx*SEG_LEN/2 + nx*KERB_W/2, oy - ty*SEG_LEN/2 + ny*KERB_W/2, h),
-                (ox + tx*SEG_LEN/2 + nx*KERB_W/2, oy + ty*SEG_LEN/2 + ny*KERB_W/2, h),
-                (ox + tx*SEG_LEN/2 - nx*KERB_W/2, oy + ty*SEG_LEN/2 - ny*KERB_W/2, h),
-            ]
-            kf = [(0,1,2,3),(4,5,6,7),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]
-            km = bpy.data.meshes.new(f"kerb_{seg_i}_{side_sign}")
-            km.from_pydata(kv, [], kf); km.update()
-            ko = bpy.data.objects.new(f"kerb_{seg_i}_{side_sign}", km)
-            bpy.context.scene.collection.objects.link(ko)
-            ko.data.materials.append(mat)
-            kerb_objects.append(ko)
+    for side, mats in [(-1, [MAT_KERB_R, MAT_KERB_W]),
+                        ( 1, [MAT_KERB_W, MAT_KERB_R])]:
+        mat_k = mats[seg_index % 2]
+        ox = cx + side * (hw + KERB_W*0.5) * nrx
+        oy = cy + side * (hw + KERB_W*0.5) * nry
+        sl = KERB_SEG_LEN * 0.5
+        kv = [
+            (ox - tx*sl - nrx*KERB_W*0.5, oy - ty*sl - nry*KERB_W*0.5, 0),
+            (ox - tx*sl + nrx*KERB_W*0.5, oy - ty*sl + nry*KERB_W*0.5, 0),
+            (ox + tx*sl + nrx*KERB_W*0.5, oy + ty*sl + nry*KERB_W*0.5, 0),
+            (ox + tx*sl - nrx*KERB_W*0.5, oy + ty*sl - nry*KERB_W*0.5, 0),
+            (ox - tx*sl - nrx*KERB_W*0.5, oy - ty*sl - nry*KERB_W*0.5, h),
+            (ox - tx*sl + nrx*KERB_W*0.5, oy - ty*sl + nry*KERB_W*0.5, h),
+            (ox + tx*sl + nrx*KERB_W*0.5, oy + ty*sl + nry*KERB_W*0.5, h),
+            (ox + tx*sl - nrx*KERB_W*0.5, oy + ty*sl - nry*KERB_W*0.5, h),
+        ]
+        kf = [(0,1,2,3),(4,5,6,7),(0,4,5,1),(1,5,6,2),(2,6,7,3),(3,7,4,0)]
+        km = bpy.data.meshes.new(f"kerb_{kerb_count}")
+        km.from_pydata(kv, [], kf); km.update()
+        ko = bpy.data.objects.new(f"kerb_{kerb_count}", km)
+        bpy.context.scene.collection.objects.link(ko)
+        ko.data.materials.append(mat_k)
+        kerb_count += 1
 
-        seg_i += 1
-        i += 3  # skip ahead to avoid duplicate kerbs
-    else:
-        i += 1
+    seg_index += 1
 
-print(f"  Kerb segments: {seg_i}")
+print(f"  Kerbs placed: {kerb_count}")
 
-# ── BARRIERS ──────────────────────────────────────────────────────────────────
-print("[Build] Building barriers…")
+# ── OUTER BARRIER ─────────────────────────────────────────────────────────────
+print("[SKC] Building barriers…")
+BARRIER_OFFSET = TRACK_WIDTH/2 + 0.6
+BARRIER_H = 0.9
 
-def build_barrier(pts, offset, name):
-    n = len(pts)
-    verts = []; faces = []
-    for i in range(n):
-        cx, cy = pts[i]
-        nx, ny = perp_normal_pts(pts, i)
-        ox = cx + offset * nx
-        oy = cy + offset * ny
-        verts.append((ox, oy, 0.0))
-        verts.append((ox, oy, 0.8))
-    for i in range(n):
-        i0 = i*2; i1 = i*2+1
-        i2 = ((i+1)%n)*2; i3 = ((i+1)%n)*2+1
-        faces.append((i0,i2,i3,i1))
-    bm = bpy.data.meshes.new(name)
-    bm.from_pydata(verts,[],faces); bm.update()
-    bo = bpy.data.objects.new(name, bm)
-    bpy.context.scene.collection.objects.link(bo)
-    bo.data.materials.append(mat_barrier)
-    return bo
+bv, bf = [], []
+for i in range(N):
+    cx, cy = center[i]
+    nrx, nry = normal_at(center, i)
+    ox = cx - nrx * BARRIER_OFFSET   # outer side
+    oy = cy - nry * BARRIER_OFFSET
+    bv.append((ox, oy, 0.0))
+    bv.append((ox, oy, BARRIER_H))
 
-barrier_outer = build_barrier(center_pts,  (TRACK_WIDTH/2 + 0.5), "barrier_outer")
-barrier_inner = build_barrier(center_pts, -(TRACK_WIDTH/2 + 0.5), "barrier_inner")
-barrier_objects = [barrier_outer, barrier_inner]
-print("  Barriers built.")
+for i in range(N-1):
+    a,b,c,d = i*2, i*2+1, (i+1)*2, (i+1)*2+1
+    bf.append((a, c, d, b))
 
-# ── ENABLE FBX + EXPORT ───────────────────────────────────────────────────────
-print("\n[Export] Exporting FBX files…")
+bme = bpy.data.meshes.new("barrier_outer")
+bme.from_pydata(bv, [], bf); bme.update()
+bobj = bpy.data.objects.new("barrier_outer", bme)
+bpy.context.scene.collection.objects.link(bobj)
+bobj.data.materials.append(MAT_BARRIER)
 
-fbx_available = False
+# ── COLLECT ALL OBJECTS ────────────────────────────────────────────────────────
+all_objs  = [o for o in bpy.context.scene.collection.objects if o.type == 'MESH']
+road_objs = [track_obj, sobj, pit_obj]
+kerb_objs = [o for o in all_objs if o.name.startswith("kerb_")]
+
+print(f"\n[SKC] Scene: {len(all_objs)} mesh objects total")
+
+# ── FBX / OBJ EXPORT ──────────────────────────────────────────────────────────
+print("\n[SKC] Enabling FBX exporter…")
+fbx_ok = False
 try:
     import addon_utils
     addon_utils.enable("io_scene_fbx", default_set=True, persistent=True)
-    fbx_available = hasattr(bpy.ops.export_scene, 'fbx')
-    print(f"  FBX exporter: {'enabled' if fbx_available else 'not available'}")
+    fbx_ok = hasattr(bpy.ops.export_scene, "fbx")
+    print(f"  FBX: {'OK' if fbx_ok else 'not available'}")
 except Exception as e:
-    print(f"  FBX addon: {e}")
+    print(f"  FBX addon error: {e}")
 
-def export_objects(objs, filepath):
+def export_sel(objs, path):
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
-        if o and o.name in bpy.data.objects:
-            o.select_set(True)
-            bpy.context.view_layer.objects.active = o
-    if fbx_available:
+        try: o.select_set(True); bpy.context.view_layer.objects.active = o
+        except: pass
+    if fbx_ok:
         try:
             bpy.ops.export_scene.fbx(
-                filepath=filepath, use_selection=True,
+                filepath=path, use_selection=True,
                 global_scale=1.0, axis_forward='-Z', axis_up='Y',
                 apply_unit_scale=True, apply_scale_options='FBX_SCALE_NONE',
                 bake_space_transform=True, mesh_smooth_type='FACE',
                 use_mesh_modifiers=True, add_leaf_bones=False,
-                path_mode='COPY', embed_textures=False,
             )
-            print(f"    → {filepath}")
+            print(f"    FBX → {os.path.basename(path)}")
             return
         except Exception as e:
             print(f"    FBX failed ({e}), trying OBJ…")
-    obj_path = filepath.replace(".fbx", ".obj")
+    obj_path = path.replace(".fbx", ".obj")
     try:
         bpy.ops.wm.obj_export(
             filepath=obj_path, export_selected_objects=True,
             forward_axis='NEGATIVE_Z', up_axis='Y',
             apply_modifiers=True, export_materials=True,
         )
-        print(f"    → {obj_path} (OBJ)")
+        print(f"    OBJ → {os.path.basename(obj_path)}")
     except Exception as e2:
-        print(f"    OBJ also failed: {e2}")
+        print(f"    OBJ failed: {e2}")
 
-all_objs = [track_obj, terrain_obj, pit_obj] + kerb_objects + barrier_objects
-export_objects(all_objs,           os.path.join(OUTPUT_DIR, "track_mesh.fbx"))
-export_objects([track_obj],        os.path.join(OUTPUT_DIR, "track_surface.fbx"))
-export_objects([terrain_obj],      os.path.join(OUTPUT_DIR, "terrain.fbx"))
-export_objects(kerb_objects,       os.path.join(OUTPUT_DIR, "curbs.fbx"))
-export_objects(barrier_objects,    os.path.join(OUTPUT_DIR, "barriers.fbx"))
+export_sel(all_objs,  os.path.join(OUTPUT_DIR, "track_mesh.fbx"))
+export_sel(road_objs, os.path.join(OUTPUT_DIR, "track_surface.fbx"))
+export_sel([terrain], os.path.join(OUTPUT_DIR, "terrain.fbx"))
+if kerb_objs:
+    export_sel(kerb_objs, os.path.join(OUTPUT_DIR, "curbs.fbx"))
+export_sel([bobj],    os.path.join(OUTPUT_DIR, "barriers.fbx"))
 
-print(f"\n✅ Export complete → {OUTPUT_DIR}")
-print(f"\n═══════════════════════════════════════════════")
-print(f"  Stockholm Karting Center — Build Complete")
-print(f"  Track length  : {total_len:.0f}m")
-print(f"  Track width   : {TRACK_WIDTH}m")
-print(f"  Curve pts     : {n_pts}")
-print(f"  Kerb segments : {seg_i}")
-print(f"═══════════════════════════════════════════════")
-print("\nDone. Open Blender to inspect before compiling to .kn5.")
+print(f"""
+╔══════════════════════════════════════════════╗
+║  Stockholm Karting Center — Build Complete   ║
+║  Length  : {total_m:>6.0f}m  (target ~1047m)      ║
+║  Width   :   7.92m (26ft)                   ║
+║  Points  : {N:>6d}  evaluated               ║
+║  Kerbs   : {kerb_count:>6d}  segments                ║
+║  Output  : content/tracks/stockholm_karting ║
+╚══════════════════════════════════════════════╝
+""")
