@@ -24,7 +24,8 @@ import bpy
 import os
 import math
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ── SET THIS TO YOUR EXTRACTED FOLDER ────────────────────────────────────────
+SCRIPT_DIR = r"C:\Users\Spencer Dankey\Downloads\stockholm-kart-ac-master"
 SAT_PATH   = os.path.join(SCRIPT_DIR, "satellite_clear.png")
 
 # ── CLEAR SCENE ───────────────────────────────────────────────────────────────
