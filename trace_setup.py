@@ -25,7 +25,7 @@ import os
 import math
 
 # ── SET THIS TO YOUR EXTRACTED FOLDER ────────────────────────────────────────
-SCRIPT_DIR = r"C:\Users\Spencer Dankey\Downloads\stockholm-kart-ac-master"
+SCRIPT_DIR = r"C:\skc"
 SAT_PATH   = os.path.join(SCRIPT_DIR, "satellite_clear.png")
 
 # ── CLEAR SCENE ───────────────────────────────────────────────────────────────
