@@ -1,777 +1,406 @@
 """
 Stockholm Karting Center — Assetto Corsa Track Mesh Builder
-============================================================
-Blender Python script (bpy) — Run via: blender --background --python build_track_mesh.py
-
-Builds:
-  • Full asphalt track surface (7.92m wide, ~1048m long, 14 turns)
-  • Terrain ground plane (200m x 200m, elevation-displaced)
-  • Permanent edge kerbs (inside & outside at each corner apex)
-  • Permanent concrete/armco outer boundary barriers
-  • 6 Assetto Corsa-ready materials
-
-NOTE: NO layout-defining tire barriers, chicanes, or redirectors.
-      The full racing surface is clean and open. Jeff handles layouts manually in AC.
-
-Track: 13185 US Hwy 12 SW, Cokato MN 55321
-GPS center: 45.0772°N, 94.1858°W
-Author: TopDog AI / Highlands
+Rebuilt 2026-03-06 using Blender Bezier curves for smooth geometry.
+Track layout traced from satellite imagery.
 """
 
 import bpy
-import bmesh
 import math
-import json
-import csv
 import os
-from mathutils import Vector, Matrix
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-GEOJSON_PATH = os.path.join(SCRIPT_DIR, "track_centerline.geojson")
-ELEV_PATH    = os.path.join(SCRIPT_DIR, "elevation_profile.csv")
-OUTPUT_DIR   = os.path.join(SCRIPT_DIR, "content", "tracks", "stockholm_karting", "models")
-
-GPS_CENTER_LAT =  45.0641
-GPS_CENTER_LON = -94.1582
-EARTH_RADIUS_M =  6371000.0
-
-TRACK_WIDTH       = 7.92    # metres (26 ft)
-HALF_WIDTH        = TRACK_WIDTH / 2.0   # 3.96m
-
-KERB_INNER_WIDTH  = 0.30    # metres
-KERB_INNER_RAISE  = 0.03    # metres — raised inside apex kerbs
-KERB_OUTER_WIDTH  = 0.20    # metres — flat exit kerbs
-KERB_OUTER_RAISE  = 0.005   # metres — nearly flush
-
-BARRIER_OFFSET    = 1.50    # metres beyond track edge
-BARRIER_CONCRETE_H = 0.50   # metres
-BARRIER_TIRE_H     = 0.50   # metres (stacked on top of concrete)
-
-TERRAIN_SIZE      = 200.0   # metres square
-TERRAIN_GRID      = 20      # subdivisions each axis
-TRACK_RAISE       = 0.05    # metres track sits above terrain
-
-# Corner radius thresholds (metres)
-CORNER_TIGHT_R    = 30.0
-CORNER_MEDIUM_R   = 60.0
-
-# Kerb segment count per corner (alternating red/white stripes)
-KERB_SEGS         = 8
-
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR  = os.path.join(SCRIPT_DIR, "content", "tracks", "stockholm_karting", "models")
+TRACK_WIDTH = 7.92   # 26 feet in meters
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. COORDINATE HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── TRACK WAYPOINTS (local meters, X=east, Y=north) ─────────────────────────
+# Traced from satellite imagery. Counter-clockwise direction.
+# Front straight runs E-W at Y=0 (north edge). Track extends south.
+#
+# Layout:
+#   Front straight (north, E-W)
+#   → NE sweeper turning south
+#   → East side heading south
+#   → Large SE oval loop (main feature, grass infield)
+#   → Exit oval heading northwest
+#   → Center flowing S-bends
+#   → NW tight complex
+#   → West side heading back east along north
+#   → Front straight
+#
+# Each tuple: (x, y) in meters
 
-def latlon_to_xy(lat, lon):
-    """Equirectangular projection → local X (east), Y (north) in metres."""
-    lat_rad = math.radians(GPS_CENTER_LAT)
-    x = math.radians(lon - GPS_CENTER_LON) * math.cos(lat_rad) * EARTH_RADIUS_M
-    y = math.radians(lat - GPS_CENTER_LAT) * EARTH_RADIUS_M
-    return x, y
+WAYPOINTS = [
+    # Front straight (W → E)
+    (-110,   5),
+    ( -80,   5),
+    ( -40,   5),
+    (   0,   5),
+    (  40,   5),
+    (  80,   5),
+    ( 110,   5),
 
+    # NE corner sweeper (right turn, heading south)
+    ( 130, -10),
+    ( 140, -30),
+    ( 140, -60),
 
-def vec2(x, y):
-    return Vector((x, y))
+    # East side straight (heading south)
+    ( 138, -90),
+    ( 132,-115),
 
+    # Oval entry — sweeping right into the oval (SE feature)
+    ( 120,-130),
+    ( 100,-148),
+    (  70,-158),
+    (  40,-162),
+    (  10,-160),
 
-def perp2(v):
-    """2-D perpendicular (rotated 90° CCW)."""
-    return Vector((-v.y, v.x))
+    # Oval south — wrapping around the bottom (tight right)
+    ( -20,-155),
+    ( -45,-142),
+    ( -60,-125),
 
+    # Oval exit — heading northwest
+    ( -60,-105),
+    ( -52, -88),
+    ( -40, -75),
 
-def normalise2(v):
-    l = v.length
-    if l < 1e-9:
-        return Vector((1, 0))
-    return v / l
+    # Center S-bends (flowing, not tight)
+    ( -20, -65),
+    (   5, -58),
+    (  20, -50),
+    (  10, -40),
+    ( -10, -32),
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. LOAD & CONVERT GEOJSON CENTERLINE
-# ─────────────────────────────────────────────────────────────────────────────
+    # NW tight complex
+    ( -40, -25),
+    ( -70, -22),
+    ( -95, -18),
+    (-115, -12),
 
-print("\n[1/8] Loading GeoJSON centerline …")
+    # Back to front straight
+    (-115,  -2),
+    (-110,   5),
+]
 
-with open(GEOJSON_PATH, "r") as f:
-    gj = json.load(f)
+print(f"\n[Build] Stockholm Karting Center — Bezier curve method")
+print(f"[Build] Waypoints: {len(WAYPOINTS)}")
 
-raw_coords = gj["features"][0]["geometry"]["coordinates"]   # [lon, lat]
-
-# Convert to local XY (Z=0 for now)
-centerline_2d = [latlon_to_xy(lat, lon) for lon, lat in raw_coords]
-
-# Build 3-D points (Z will be filled by elevation interpolation later)
-cl_pts = [Vector((x, y, 0.0)) for x, y in centerline_2d]
-
-n_pts = len(cl_pts)
-print(f"    Loaded {n_pts} centerline points")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. LOAD ELEVATION PROFILE & INTERPOLATE ALONG CENTERLINE
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("[2/8] Loading elevation profile & interpolating …")
-
-elev_refs = []
-with open(ELEV_PATH, newline="") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        elev_refs.append({
-            "lat": float(row["lat"]),
-            "lon": float(row["lng"]),
-            "elev_m": float(row["elevation_m"]),
-            "desc": row["description"]
-        })
-
-# Convert elevation reference points to local XY
-for e in elev_refs:
-    e["x"], e["y"] = latlon_to_xy(e["lat"], e["lon"])
-
-# Compute cumulative arc-length along the centerline
-arc_len = [0.0]
-for i in range(1, n_pts):
-    d = (cl_pts[i] - cl_pts[i-1]).length
-    arc_len.append(arc_len[-1] + d)
-total_len = arc_len[-1]
-print(f"    Centerline arc-length: {total_len:.1f} m")
-
-# Map each elevation reference to the nearest centerline arc-length
-# by finding the closest centerline point to each reference XY
-def closest_arc_len(ref_x, ref_y):
-    best_i, best_d = 0, 1e12
-    for i, p in enumerate(cl_pts):
-        d = math.hypot(p.x - ref_x, p.y - ref_y)
-        if d < best_d:
-            best_d, best_i = d, i
-    return arc_len[best_i]
-
-for e in elev_refs:
-    e["s"] = closest_arc_len(e["x"], e["y"])
-
-# Sort by arc-length
-elev_refs.sort(key=lambda e: e["s"])
-
-# Interpolate elevation at each centerline point
-def interp_elev(s):
-    if s <= elev_refs[0]["s"]:
-        return elev_refs[0]["elev_m"]
-    if s >= elev_refs[-1]["s"]:
-        return elev_refs[-1]["elev_m"]
-    for i in range(len(elev_refs)-1):
-        s0, s1 = elev_refs[i]["s"], elev_refs[i+1]["s"]
-        if s0 <= s <= s1:
-            t = (s - s0) / max(s1 - s0, 1e-9)
-            return elev_refs[i]["elev_m"] + t * (elev_refs[i+1]["elev_m"] - elev_refs[i]["elev_m"])
-    return elev_refs[-1]["elev_m"]
-
-# AC: Y=up convention → but Blender uses Z=up; we keep Z=up throughout
-# Centre elevation (start/finish line) = 98.18m. We zero-reference to that.
-BASE_ELEV = 98.18
-for i, p in enumerate(cl_pts):
-    raw_elev = interp_elev(arc_len[i])
-    cl_pts[i].z = (raw_elev - BASE_ELEV) + TRACK_RAISE
-
-print(f"    Elevation range: {min(p.z for p in cl_pts):.3f}m to {max(p.z for p in cl_pts):.3f}m (relative)")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. COMPUTE TANGENTS, NORMALS, CURVATURE → CORNER CLASSIFICATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("[3/8] Computing curvature & classifying corners …")
-
-def tangent_at(i):
-    """Forward tangent unit vector at index i (2-D, ignores Z)."""
-    if i == 0:
-        d = cl_pts[1] - cl_pts[0]
-    elif i == n_pts - 1:
-        d = cl_pts[-1] - cl_pts[-2]
-    else:
-        d = cl_pts[i+1] - cl_pts[i-1]
-    return normalise2(vec2(d.x, d.y))
-
-def curvature_radius_at(i):
-    """Menger curvature radius at index i using 3 consecutive points (2-D)."""
-    if i == 0 or i == n_pts - 1:
-        return 1e6  # straight
-    A = vec2(cl_pts[i-1].x, cl_pts[i-1].y)
-    B = vec2(cl_pts[i  ].x, cl_pts[i  ].y)
-    C = vec2(cl_pts[i+1].x, cl_pts[i+1].y)
-    ab = (B - A).length
-    bc = (C - B).length
-    ca = (A - C).length
-    area2 = abs((B.x - A.x)*(C.y - A.y) - (C.x - A.x)*(B.y - A.y))
-    if area2 < 1e-6:
-        return 1e6
-    denom = ab * bc * ca
-    if denom < 1e-9:
-        return 1e6
-    return denom / (2.0 * area2)
-
-# Store curvature radii
-radii = [curvature_radius_at(i) for i in range(n_pts)]
-
-# Detect corners: group consecutive points below a threshold into corner regions
-CURVE_THRESHOLD = 80.0   # if radius < 80m, it's a corner region
-
-in_corner = False
-corner_start = 0
-corners = []   # list of dicts: {start, end, min_radius, sign}
-
-for i in range(n_pts):
-    r = radii[i]
-    entering = (r < CURVE_THRESHOLD)
-    if entering and not in_corner:
-        in_corner = True
-        corner_start = i
-    elif not entering and in_corner:
-        in_corner = False
-        # classify
-        seg_radii = [radii[j] for j in range(corner_start, i)]
-        min_r = min(seg_radii)
-        apex_i = corner_start + seg_radii.index(min_r)
-        # Sign: cross product tangent × next-tangent → positive=left, negative=right
-        t0 = tangent_at(corner_start)
-        t1 = tangent_at(i-1)
-        cross_z = t0.x * t1.y - t0.y * t1.x
-        sign = 1 if cross_z > 0 else -1   # +1=left turn, -1=right turn
-        corners.append({
-            "start": corner_start,
-            "end":   i - 1,
-            "apex":  apex_i,
-            "min_r": min_r,
-            "sign":  sign,
-            "type":  "tight"   if min_r < CORNER_TIGHT_R  else
-                     "medium"  if min_r < CORNER_MEDIUM_R else
-                     "sweeper"
-        })
-
-if in_corner:
-    seg_radii = [radii[j] for j in range(corner_start, n_pts)]
-    min_r = min(seg_radii)
-    apex_i = corner_start + seg_radii.index(min_r)
-    t0 = tangent_at(corner_start)
-    t1 = tangent_at(n_pts-1)
-    cross_z = t0.x * t1.y - t0.y * t1.x
-    sign = 1 if cross_z > 0 else -1
-    corners.append({
-        "start": corner_start,
-        "end":   n_pts - 1,
-        "apex":  apex_i,
-        "min_r": min_r,
-        "sign":  sign,
-        "type":  "tight" if min_r < CORNER_TIGHT_R else
-                 "medium" if min_r < CORNER_MEDIUM_R else
-                 "sweeper"
-    })
-
-# Cap to 14 corners (if algo finds more, keep the 14 sharpest)
-if len(corners) > 14:
-    corners.sort(key=lambda c: c["min_r"])
-    corners = corners[:14]
-    corners.sort(key=lambda c: c["apex"])
-
-print(f"    Found {len(corners)} corners:")
-for idx, c in enumerate(corners):
-    turn = "L" if c["sign"] == 1 else "R"
-    print(f"      T{idx+1:02d} apex@pt{c['apex']:02d}  R={c['min_r']:5.1f}m  {c['type']:7s}  {turn}")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. SCENE SETUP
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("[4/8] Setting up Blender scene …")
-
-# Clear existing mesh objects
+# ── CLEAR SCENE ──────────────────────────────────────────────────────────────
 bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete(use_global=False, confirm=False)
+bpy.ops.object.delete()
+for col in bpy.data.collections:
+    bpy.data.collections.remove(col)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. MATERIALS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def make_material(name, color_hex, roughness=0.85, metallic=0.0):
-    """Create a Principled BSDF material with the given flat colour."""
-    if name in bpy.data.materials:
-        return bpy.data.materials[name]
-    mat = bpy.data.materials.new(name=name)
+# ── MATERIALS ────────────────────────────────────────────────────────────────
+def make_mat(name, r, g, b, roughness=0.85):
+    mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    if bsdf is None:
-        bsdf = mat.node_tree.nodes.new("ShaderNodeBsdfPrincipled")
-    r = int(color_hex[1:3], 16) / 255.0
-    g = int(color_hex[3:5], 16) / 255.0
-    b = int(color_hex[5:7], 16) / 255.0
-    bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
-    bsdf.inputs["Roughness"].default_value  = roughness
-    bsdf.inputs["Metallic"].default_value   = metallic
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (r, g, b, 1)
+        bsdf.inputs["Roughness"].default_value  = roughness
     return mat
 
-mat_asphalt  = make_material("road_asphalt",     "#1a1a1a", roughness=0.85)
-mat_terrain  = make_material("grass_terrain",    "#3a7a2a", roughness=0.90)
-mat_kerb_r   = make_material("kerb_red",         "#cc1111", roughness=0.70)
-mat_kerb_w   = make_material("kerb_white",       "#eeeeee", roughness=0.70)
-mat_barrier  = make_material("barrier_concrete", "#888888", roughness=0.80)
-mat_pit      = make_material("pit_surface",      "#333333", roughness=0.88)
+mat_asphalt  = make_mat("road_asphalt",  0.10, 0.10, 0.10, 0.9)
+mat_grass    = make_mat("grass_terrain",  0.22, 0.48, 0.17, 0.9)
+mat_kerb_r   = make_mat("kerb_red",       0.80, 0.05, 0.05, 0.7)
+mat_kerb_w   = make_mat("kerb_white",     0.92, 0.92, 0.92, 0.7)
+mat_barrier  = make_mat("barrier_concrete",0.55, 0.55, 0.55, 0.9)
+mat_pit      = make_mat("pit_surface",    0.22, 0.22, 0.22, 0.9)
 
-print("    Materials created.")
+print("[Build] Materials created.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. BUILD TRACK SURFACE
-# ─────────────────────────────────────────────────────────────────────────────
+# ── BEZIER CURVE TRACK ───────────────────────────────────────────────────────
+def build_track_from_bezier(waypoints, width, name="track_surface"):
+    """Create smooth track surface using Blender Bezier curve → mesh."""
+    # Create curve object
+    curve_data = bpy.data.curves.new(name=f"{name}_curve", type='CURVE')
+    curve_data.dimensions = '2D'
+    curve_data.fill_mode  = 'NONE'
 
-print("[5/8] Building track surface mesh …")
+    spline = curve_data.splines.new('BEZIER')
+    spline.bezier_points.add(len(waypoints) - 1)
+    spline.use_cyclic_u = True
 
-def build_track_surface():
-    mesh = bpy.data.meshes.new("track_surface_mesh")
-    obj  = bpy.data.objects.new("track_surface", mesh)
-    bpy.context.collection.objects.link(obj)
+    for i, (x, y) in enumerate(waypoints):
+        bp = spline.bezier_points[i]
+        bp.co = (x, y, 0)
+        bp.handle_left_type  = 'AUTO'
+        bp.handle_right_type = 'AUTO'
 
-    bm = bmesh.new()
+    curve_data.resolution_u = 12   # smoothness per segment
 
-    left_verts  = []
-    right_verts = []
+    # Convert to mesh by adding bevel for width
+    # Use extrude along normals approach: create mesh manually from evaluated curve
+    curve_obj = bpy.data.objects.new(f"{name}_curve_obj", curve_data)
+    bpy.context.scene.collection.objects.link(curve_obj)
+    bpy.context.view_layer.objects.active = curve_obj
+    curve_obj.select_set(True)
 
-    for i in range(n_pts):
-        p  = cl_pts[i]
-        t  = tangent_at(i)
-        n  = normalise2(perp2(t))   # left-pointing normal
+    # Get evaluated points
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj  = curve_obj.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh()
 
-        # Elevate both edges at same Z as centreline (flat cross-section)
-        z = p.z
+    # Extract centerline vertices from evaluated curve
+    center_pts = [(v.co.x, v.co.y) for v in eval_mesh.vertices]
+    eval_obj.to_mesh_clear()
 
-        lv = bm.verts.new((p.x + n.x * HALF_WIDTH,
-                            p.y + n.y * HALF_WIDTH,
-                            z))
-        rv = bm.verts.new((p.x - n.x * HALF_WIDTH,
-                            p.y - n.y * HALF_WIDTH,
-                            z))
-        left_verts.append(lv)
-        right_verts.append(rv)
+    # Remove curve object
+    bpy.data.objects.remove(curve_obj)
+    bpy.data.curves.remove(curve_data)
 
-    bm.verts.ensure_lookup_table()
+    if len(center_pts) < 3:
+        print(f"  [WARN] Only {len(center_pts)} center pts — falling back to waypoints")
+        center_pts = [(x, y) for x, y in waypoints]
 
-    # Build quad faces
-    for i in range(n_pts - 1):
-        l0, r0 = left_verts[i],   right_verts[i]
-        l1, r1 = left_verts[i+1], right_verts[i+1]
-        bm.faces.new([l0, r0, r1, l1])
+    n = len(center_pts)
+    half_w = width / 2.0
 
-    bm.faces.ensure_lookup_table()
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    bm.to_mesh(mesh)
-    bm.free()
+    verts  = []
+    faces  = []
 
-    mesh.shade_flat()
-    obj.data.materials.append(mat_asphalt)
-    print(f"    Track surface: {n_pts-1} quads built.")
-    return obj, left_verts, right_verts
-
-track_obj, left_edge_verts, right_edge_verts = build_track_surface()
-
-# Store edge positions for barrier/kerb placement (world-space tuples)
-left_edge  = []
-right_edge = []
-for i in range(n_pts):
-    t = tangent_at(i)
-    n = normalise2(perp2(t))
-    p = cl_pts[i]
-    z = p.z
-    left_edge.append( Vector((p.x + n.x * HALF_WIDTH, p.y + n.y * HALF_WIDTH, z)) )
-    right_edge.append(Vector((p.x - n.x * HALF_WIDTH, p.y - n.y * HALF_WIDTH, z)) )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. BUILD TERRAIN
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("[6/8] Building terrain …")
-
-def build_terrain():
-    mesh = bpy.data.meshes.new("terrain_mesh")
-    obj  = bpy.data.objects.new("terrain", mesh)
-    bpy.context.collection.objects.link(obj)
-
-    bm = bmesh.new()
-
-    half = TERRAIN_SIZE / 2.0
-    step = TERRAIN_SIZE / TERRAIN_GRID
-
-    # Build grid vertices with elevation
-    verts = []
-    for row in range(TERRAIN_GRID + 1):
-        row_verts = []
-        for col in range(TERRAIN_GRID + 1):
-            wx = -half + col * step
-            wy = -half + row * step
-            # Find closest centerline point for elevation reference
-            best_s = arc_len[0]
-            best_d = 1e12
-            for idx, cp in enumerate(cl_pts):
-                d = math.hypot(cp.x - wx, cp.y - wy)
-                if d < best_d:
-                    best_d = d
-                    best_s = arc_len[idx]
-            raw_e = interp_elev(best_s)
-            # Blend: close to track → use track elev; far away → flatten gently
-            dist_factor = min(best_d / 30.0, 1.0)
-            terrain_e = raw_e - BASE_ELEV  # same reference as track
-            wz = terrain_e * (1.0 - dist_factor * 0.3)   # slight smoothing away from track
-            row_verts.append(bm.verts.new((wx, wy, wz)))
-        verts.append(row_verts)
-
-    bm.verts.ensure_lookup_table()
-
-    for row in range(TERRAIN_GRID):
-        for col in range(TERRAIN_GRID):
-            v0 = verts[row    ][col    ]
-            v1 = verts[row    ][col + 1]
-            v2 = verts[row + 1][col + 1]
-            v3 = verts[row + 1][col    ]
-            bm.faces.new([v0, v1, v2, v3])
-
-    bm.faces.ensure_lookup_table()
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    bm.to_mesh(mesh)
-    bm.free()
-
-    mesh.shade_smooth()
-    obj.data.materials.append(mat_terrain)
-    print(f"    Terrain: {TERRAIN_GRID}×{TERRAIN_GRID} grid built.")
-    return obj
-
-terrain_obj = build_terrain()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. BUILD PERMANENT EDGE KERBS
-# ─────────────────────────────────────────────────────────────────────────────
-# These are permanent kerbs running along each corner's inside and outside edge.
-# NOT portable barriers. No layout-defining elements.
-# Inside (apex): raised 3cm, 30cm wide, alternating red/white stripes
-# Outside (exit): near-flush 0.5cm, 20cm wide, alternating red/white stripes
-
-print("[7/8] Building permanent edge kerbs …")
-
-kerb_objects = []
-
-def build_kerb_strip(pts_inner, pts_outer, n_segs, raise_h, mat_list, name):
-    """
-    Build an alternating red/white kerb strip.
-    pts_inner / pts_outer: list of Vector positions for the two longitudinal edges.
-    n_segs: number of alternating colour segments.
-    raise_h: extra Z raise for the kerb surface.
-    mat_list: [mat_red, mat_white] or [mat_white, mat_red]
-    """
-    mesh = bpy.data.meshes.new(name + "_mesh")
-    obj  = bpy.data.objects.new(name, mesh)
-    bpy.context.collection.objects.link(obj)
-
-    mesh.materials.append(mat_kerb_r)
-    mesh.materials.append(mat_kerb_w)
-
-    bm = bmesh.new()
-    n  = len(pts_inner)
-    if n < 2:
-        bm.free()
-        return obj
-
-    all_inner = []
-    all_outer = []
-    for i, (pi, po) in enumerate(zip(pts_inner, pts_outer)):
-        vi = bm.verts.new((pi.x, pi.y, pi.z + raise_h))
-        vo = bm.verts.new((po.x, po.y, po.z + raise_h))
-        all_inner.append(vi)
-        all_outer.append(vo)
-
-    bm.verts.ensure_lookup_table()
-
-    seg_size = max(1, n // n_segs)
-    for i in range(n - 1):
-        seg_idx = i // seg_size
-        mat_idx = seg_idx % 2   # 0=red, 1=white
-        face = bm.faces.new([all_inner[i], all_outer[i],
-                              all_outer[i+1], all_inner[i+1]])
-        face.material_index = mat_idx
-
-    bm.faces.ensure_lookup_table()
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    bm.to_mesh(mesh)
-    bm.free()
-    mesh.shade_flat()
-    kerb_objects.append(obj)
-    return obj
-
-
-for cidx, corner in enumerate(corners):
-    s  = corner["start"]
-    e  = corner["end"]
-    ap = corner["apex"]
-    sg = corner["sign"]    # +1=left, +right=-1
-    ct = corner["type"]
-    t_num = cidx + 1
-
-    # Span the kerb over the middle portion of the corner (apex ± spread)
-    spread = {
-        "tight":   max(2, (e - s) // 2),
-        "medium":  max(2, (e - s) // 3),
-        "sweeper": max(1, (e - s) // 4),
-    }[ct]
-
-    ks = max(s, ap - spread)
-    ke = min(e, ap + spread) + 1
-
-    # Collect edge positions for this corner span
-    inside_inner  = []
-    inside_outer  = []
-    outside_inner = []
-    outside_outer = []
-
-    for i in range(ks, ke):
-        t = tangent_at(i)
-        n = normalise2(perp2(t))
-        p = cl_pts[i]
-        z = p.z
-
-        # Inside of this corner = the apex side
-        # sign +1 (left turn) → left edge (n-direction) is inside
-        # sign -1 (right turn) → right edge (-n-direction) is inside
-        if sg == 1:
-            # Left turn: inside = left edge
-            edge_inside  = Vector((p.x + n.x * HALF_WIDTH,         p.y + n.y * HALF_WIDTH,         z))
-            edge_outside = Vector((p.x - n.x * HALF_WIDTH,         p.y - n.y * HALF_WIDTH,         z))
-        else:
-            # Right turn: inside = right edge
-            edge_inside  = Vector((p.x - n.x * HALF_WIDTH,         p.y - n.y * HALF_WIDTH,         z))
-            edge_outside = Vector((p.x + n.x * HALF_WIDTH,         p.y + n.y * HALF_WIDTH,         z))
-
-        # Inside kerb: from track-edge outward by KERB_INNER_WIDTH
-        if sg == 1:
-            kerb_i_outer = Vector((p.x + n.x * (HALF_WIDTH + KERB_INNER_WIDTH),
-                                   p.y + n.y * (HALF_WIDTH + KERB_INNER_WIDTH), z))
-        else:
-            kerb_i_outer = Vector((p.x - n.x * (HALF_WIDTH + KERB_INNER_WIDTH),
-                                   p.y - n.y * (HALF_WIDTH + KERB_INNER_WIDTH), z))
-
-        # Outside exit kerb: beyond the outside edge
-        if sg == 1:
-            kerb_o_outer = Vector((p.x - n.x * (HALF_WIDTH + KERB_OUTER_WIDTH),
-                                   p.y - n.y * (HALF_WIDTH + KERB_OUTER_WIDTH), z))
-        else:
-            kerb_o_outer = Vector((p.x + n.x * (HALF_WIDTH + KERB_OUTER_WIDTH),
-                                   p.y + n.y * (HALF_WIDTH + KERB_OUTER_WIDTH), z))
-
-        inside_inner.append(edge_inside)
-        inside_outer.append(kerb_i_outer)
-        outside_inner.append(edge_outside)
-        outside_outer.append(kerb_o_outer)
-
-    if len(inside_inner) < 2:
-        continue
-
-    # Inside apex kerb (raised)
-    build_kerb_strip(inside_inner, inside_outer,
-                     KERB_SEGS, KERB_INNER_RAISE,
-                     [mat_kerb_r, mat_kerb_w],
-                     f"kerb_T{t_num:02d}_inside")
-
-    # Outside exit kerb (nearly flush)
-    build_kerb_strip(outside_inner, outside_outer,
-                     KERB_SEGS, KERB_OUTER_RAISE,
-                     [mat_kerb_r, mat_kerb_w],
-                     f"kerb_T{t_num:02d}_outside")
-
-    kerb_type_label = {"tight": "raised 3cm alternating", "medium": "standard alternating", "sweeper": "flat sausage-style"}[ct]
-    turn_dir = "Left" if sg == 1 else "Right"
-    print(f"    T{t_num:02d} {turn_dir} {ct:7s}  R={corner['min_r']:5.1f}m  apex@pt{ap:02d}  kerb={kerb_type_label}")
-
-print(f"    Total kerb objects: {len(kerb_objects)}")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. BUILD PERMANENT CONCRETE / ARMCO OUTER BOUNDARY BARRIERS
-# ─────────────────────────────────────────────────────────────────────────────
-# These run the FULL length of both track edges at BARRIER_OFFSET beyond the edge.
-# Lower half = concrete block (0.5m), upper half = tyre wall (0.5m).
-# NO portable chicanes, NO layout redirectors — permanent boundary only.
-
-print("[8/8] Building permanent outer boundary barriers …")
-
-barrier_objects = []
-
-def build_barrier_wall(edge_pts, side_name):
-    """
-    Extrudes a wall of height BARRIER_CONCRETE_H + BARRIER_TIRE_H
-    along the given edge positions, offset outward by BARRIER_OFFSET.
-    Two materials: lower = barrier_concrete, upper drawn using same mat.
-    """
-    mesh = bpy.data.meshes.new(f"barriers_{side_name}_mesh")
-    obj  = bpy.data.objects.new(f"barriers_{side_name}", mesh)
-    bpy.context.collection.objects.link(obj)
-
-    mesh.materials.append(mat_barrier)
-
-    bm = bmesh.new()
-    total_h = BARRIER_CONCRETE_H + BARRIER_TIRE_H
-
-    n = len(edge_pts)
-    bottom_verts = []
-    top_verts    = []
+    # Compute normals
+    def perp_normal(pts, i):
+        a = pts[(i - 1) % len(pts)]
+        b = pts[(i + 1) % len(pts)]
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+        length = math.sqrt(dx*dx + dy*dy) or 1.0
+        return (-dy/length, dx/length)
 
     for i in range(n):
-        p  = edge_pts[i]
-        t  = tangent_at(i)
-        nv = normalise2(perp2(t))
+        cx, cy = center_pts[i]
+        nx, ny = perp_normal(center_pts, i)
+        # Left edge (outer)
+        verts.append((cx - nx * half_w, cy - ny * half_w, 0))
+        # Right edge (inner)
+        verts.append((cx + nx * half_w, cy + ny * half_w, 0))
 
-        # Outward direction depends on which side
-        if side_name == "left":
-            ox, oy = nv.x, nv.y
-        else:
-            ox, oy = -nv.x, -nv.y
+    # Faces (quad strips)
+    for i in range(n):
+        i0 = i * 2
+        i1 = i * 2 + 1
+        i2 = ((i + 1) % n) * 2
+        i3 = ((i + 1) % n) * 2 + 1
+        faces.append((i0, i1, i3, i2))
 
-        bx = p.x + ox * BARRIER_OFFSET
-        by = p.y + oy * BARRIER_OFFSET
-        bz = p.z
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
 
-        bv = bm.verts.new((bx, by, bz))
-        tv = bm.verts.new((bx, by, bz + total_h))
-        bottom_verts.append(bv)
-        top_verts.append(tv)
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.data.materials.append(mat_asphalt)
+    return obj, center_pts
 
-    bm.verts.ensure_lookup_table()
+print("[Build] Building track surface (Bezier method)…")
+track_obj, center_pts = build_track_from_bezier(WAYPOINTS, TRACK_WIDTH)
+n_pts = len(center_pts)
+print(f"  Track surface built: {n_pts} evaluated points")
 
-    for i in range(n - 1):
-        b0, b1 = bottom_verts[i], bottom_verts[i+1]
-        t0, t1 = top_verts[i],    top_verts[i+1]
-        face = bm.faces.new([b0, b1, t1, t0])
-        face.material_index = 0
+# Calculate approximate length
+total_len = 0
+for i in range(n_pts):
+    a = center_pts[i]
+    b = center_pts[(i+1) % n_pts]
+    dx = b[0]-a[0]; dy = b[1]-a[1]
+    total_len += math.sqrt(dx*dx + dy*dy)
+print(f"  Approx length: {total_len:.0f}m")
 
-    bm.faces.ensure_lookup_table()
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    bm.to_mesh(mesh)
-    bm.free()
-    mesh.shade_flat()
-    barrier_objects.append(obj)
-    print(f"    Barrier wall '{side_name}': {n-1} panels")
-    return obj
+# ── PIT LANE (parallel to front straight, offset north 12m) ──────────────────
+print("[Build] Building pit lane…")
+pit_verts = [
+    (-115, 12, 0), (-115, 16, 0),
+    ( 110, 12, 0), ( 110, 16, 0),
+]
+pit_faces = [(0, 1, 3, 2)]
+pit_mesh  = bpy.data.meshes.new("pit_surface")
+pit_mesh.from_pydata(pit_verts, [], pit_faces)
+pit_mesh.update()
+pit_obj = bpy.data.objects.new("pit_surface", pit_mesh)
+bpy.context.scene.collection.objects.link(pit_obj)
+pit_obj.data.materials.append(mat_pit)
 
-build_barrier_wall(left_edge,  "left")
-build_barrier_wall(right_edge, "right")
+# ── TERRAIN ───────────────────────────────────────────────────────────────────
+print("[Build] Building terrain…")
+SIZE = 400
+GRID = 16
+bpy.ops.mesh.primitive_grid_add(
+    x_subdivisions=GRID, y_subdivisions=GRID,
+    size=1,
+    location=(0, -80, -0.05)
+)
+terrain_obj = bpy.context.active_object
+terrain_obj.name = "terrain"
+terrain_obj.scale = (SIZE, SIZE, 1)
+bpy.ops.object.transform_apply(scale=True)
+terrain_obj.data.materials.append(mat_grass)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. JOIN BY EXPORT GROUP & EXPORT FBX
-# ─────────────────────────────────────────────────────────────────────────────
+# ── KERBS ─────────────────────────────────────────────────────────────────────
+print("[Build] Building kerbs…")
 
-print("\n[Export] Exporting files …")
+def perp_normal_pts(pts, i):
+    n = len(pts)
+    a = pts[(i-1) % n]
+    b = pts[(i+1) % n]
+    dx = b[0]-a[0]; dy = b[1]-a[1]
+    length = math.sqrt(dx*dx+dy*dy) or 1.0
+    return (-dy/length, dx/length)
 
-# Try to enable FBX addon (needed in Blender 4.2+)
+def local_radius(pts, i):
+    n = len(pts)
+    a = pts[(i-1)%n]; b = pts[i]; c = pts[(i+1)%n]
+    ax,ay = b[0]-a[0], b[1]-a[1]
+    bx,by = c[0]-b[0], c[1]-b[1]
+    cross = abs(ax*by - ay*bx)
+    if cross < 1e-6: return 9999
+    la = math.sqrt(ax*ax+ay*ay)
+    lb = math.sqrt(bx*bx+by*by)
+    return (la+lb)/2 / (2*math.asin(min(cross/(la*lb+1e-9), 1.0)) or 1e-9)
+
+kerb_objects = []
+KERB_W   = 0.3
+KERB_H   = 0.03
+SEG_LEN  = 1.5
+half_w   = TRACK_WIDTH / 2.0
+
+seg_i = 0
+i = 0
+while i < n_pts:
+    r = local_radius(center_pts, i)
+    if r < 60:   # corner detected
+        side = 1 if r < 30 else 0   # tight = inside kerb raised
+        cx, cy = center_pts[i]
+        nx, ny = perp_normal_pts(center_pts, i)
+
+        for side_sign, mat in [(-1, mat_kerb_r if seg_i % 2 == 0 else mat_kerb_w),
+                                 (1,  mat_kerb_w if seg_i % 2 == 0 else mat_kerb_r)]:
+            ox = cx + side_sign * (half_w + KERB_W/2) * nx
+            oy = cy + side_sign * (half_w + KERB_W/2) * ny
+
+            # Next point for orientation
+            nx2, ny2 = perp_normal_pts(center_pts, (i+1)%n_pts)
+            tx = center_pts[(i+1)%n_pts][0] - cx
+            ty = center_pts[(i+1)%n_pts][1] - cy
+            tl = math.sqrt(tx*tx+ty*ty) or 1.0
+            tx /= tl; ty /= tl
+
+            h = KERB_H if r < 30 else 0.01
+
+            kv = [
+                (ox - tx*SEG_LEN/2 - nx*KERB_W/2, oy - ty*SEG_LEN/2 - ny*KERB_W/2, 0),
+                (ox - tx*SEG_LEN/2 + nx*KERB_W/2, oy - ty*SEG_LEN/2 + ny*KERB_W/2, 0),
+                (ox + tx*SEG_LEN/2 + nx*KERB_W/2, oy + ty*SEG_LEN/2 + ny*KERB_W/2, 0),
+                (ox + tx*SEG_LEN/2 - nx*KERB_W/2, oy + ty*SEG_LEN/2 - ny*KERB_W/2, 0),
+                (ox - tx*SEG_LEN/2 - nx*KERB_W/2, oy - ty*SEG_LEN/2 - ny*KERB_W/2, h),
+                (ox - tx*SEG_LEN/2 + nx*KERB_W/2, oy - ty*SEG_LEN/2 + ny*KERB_W/2, h),
+                (ox + tx*SEG_LEN/2 + nx*KERB_W/2, oy + ty*SEG_LEN/2 + ny*KERB_W/2, h),
+                (ox + tx*SEG_LEN/2 - nx*KERB_W/2, oy + ty*SEG_LEN/2 - ny*KERB_W/2, h),
+            ]
+            kf = [(0,1,2,3),(4,5,6,7),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]
+            km = bpy.data.meshes.new(f"kerb_{seg_i}_{side_sign}")
+            km.from_pydata(kv, [], kf); km.update()
+            ko = bpy.data.objects.new(f"kerb_{seg_i}_{side_sign}", km)
+            bpy.context.scene.collection.objects.link(ko)
+            ko.data.materials.append(mat)
+            kerb_objects.append(ko)
+
+        seg_i += 1
+        i += 3  # skip ahead to avoid duplicate kerbs
+    else:
+        i += 1
+
+print(f"  Kerb segments: {seg_i}")
+
+# ── BARRIERS ──────────────────────────────────────────────────────────────────
+print("[Build] Building barriers…")
+
+def build_barrier(pts, offset, name):
+    n = len(pts)
+    verts = []; faces = []
+    for i in range(n):
+        cx, cy = pts[i]
+        nx, ny = perp_normal_pts(pts, i)
+        ox = cx + offset * nx
+        oy = cy + offset * ny
+        verts.append((ox, oy, 0.0))
+        verts.append((ox, oy, 0.8))
+    for i in range(n):
+        i0 = i*2; i1 = i*2+1
+        i2 = ((i+1)%n)*2; i3 = ((i+1)%n)*2+1
+        faces.append((i0,i2,i3,i1))
+    bm = bpy.data.meshes.new(name)
+    bm.from_pydata(verts,[],faces); bm.update()
+    bo = bpy.data.objects.new(name, bm)
+    bpy.context.scene.collection.objects.link(bo)
+    bo.data.materials.append(mat_barrier)
+    return bo
+
+barrier_outer = build_barrier(center_pts,  (TRACK_WIDTH/2 + 0.5), "barrier_outer")
+barrier_inner = build_barrier(center_pts, -(TRACK_WIDTH/2 + 0.5), "barrier_inner")
+barrier_objects = [barrier_outer, barrier_inner]
+print("  Barriers built.")
+
+# ── ENABLE FBX + EXPORT ───────────────────────────────────────────────────────
+print("\n[Export] Exporting FBX files…")
+
 fbx_available = False
 try:
     import addon_utils
     addon_utils.enable("io_scene_fbx", default_set=True, persistent=True)
     fbx_available = hasattr(bpy.ops.export_scene, 'fbx')
-    if fbx_available:
-        print("    FBX exporter: enabled")
-    else:
-        print("    FBX exporter: not available, falling back to OBJ")
+    print(f"  FBX exporter: {'enabled' if fbx_available else 'not available'}")
 except Exception as e:
-    print(f"    FBX addon enable failed: {e}, falling back to OBJ")
+    print(f"  FBX addon: {e}")
 
-def select_objects(objs):
+def export_objects(objs, filepath):
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         if o and o.name in bpy.data.objects:
             o.select_set(True)
             bpy.context.view_layer.objects.active = o
-
-def export_objects(objs, filepath):
-    """Export selected objects as FBX, fall back to OBJ if unavailable."""
-    select_objects(objs)
     if fbx_available:
         try:
             bpy.ops.export_scene.fbx(
-                filepath             = filepath,
-                use_selection        = True,
-                global_scale         = 1.0,
-                axis_forward         = '-Z',
-                axis_up              = 'Y',
-                apply_unit_scale     = True,
-                apply_scale_options  = 'FBX_SCALE_NONE',
-                bake_space_transform = True,
-                mesh_smooth_type     = 'FACE',
-                use_mesh_modifiers   = True,
-                use_tspace           = True,
-                use_armature_deform_only = False,
-                add_leaf_bones       = False,
-                path_mode            = 'COPY',
-                embed_textures       = False,
+                filepath=filepath, use_selection=True,
+                global_scale=1.0, axis_forward='-Z', axis_up='Y',
+                apply_unit_scale=True, apply_scale_options='FBX_SCALE_NONE',
+                bake_space_transform=True, mesh_smooth_type='FACE',
+                use_mesh_modifiers=True, add_leaf_bones=False,
+                path_mode='COPY', embed_textures=False,
             )
             print(f"    → {filepath}")
             return
         except Exception as e:
-            print(f"    FBX export failed ({e}), trying OBJ …")
-    # OBJ fallback
+            print(f"    FBX failed ({e}), trying OBJ…")
     obj_path = filepath.replace(".fbx", ".obj")
     try:
         bpy.ops.wm.obj_export(
-            filepath        = obj_path,
-            export_selected_objects = True,
-            forward_axis    = 'NEGATIVE_Z',
-            up_axis         = 'Y',
-            apply_modifiers = True,
-            export_materials = True,
+            filepath=obj_path, export_selected_objects=True,
+            forward_axis='NEGATIVE_Z', up_axis='Y',
+            apply_modifiers=True, export_materials=True,
         )
-        print(f"    → {obj_path}  (OBJ fallback)")
+        print(f"    → {obj_path} (OBJ)")
     except Exception as e2:
-        print(f"    OBJ export also failed: {e2}")
+        print(f"    OBJ also failed: {e2}")
 
-# Debug: confirm output dir exists and list available export ops
-print(f"\n[Debug] OUTPUT_DIR = {OUTPUT_DIR}")
-print(f"[Debug] Dir exists: {os.path.exists(OUTPUT_DIR)}")
-print(f"[Debug] FBX available: {fbx_available}")
-print(f"[Debug] obj_export available: {hasattr(bpy.ops.wm, 'obj_export')}")
-print(f"[Debug] export_scene.obj available: {hasattr(bpy.ops.export_scene, 'obj')}")
-print(f"[Debug] Objects in scene: {[o.name for o in bpy.data.objects]}")
+all_objs = [track_obj, terrain_obj, pit_obj] + kerb_objects + barrier_objects
+export_objects(all_objs,           os.path.join(OUTPUT_DIR, "track_mesh.fbx"))
+export_objects([track_obj],        os.path.join(OUTPUT_DIR, "track_surface.fbx"))
+export_objects([terrain_obj],      os.path.join(OUTPUT_DIR, "terrain.fbx"))
+export_objects(kerb_objects,       os.path.join(OUTPUT_DIR, "curbs.fbx"))
+export_objects(barrier_objects,    os.path.join(OUTPUT_DIR, "barriers.fbx"))
 
-# Master all-in-one
-all_objects = [track_obj, terrain_obj] + kerb_objects + barrier_objects
-export_objects(all_objects, os.path.join(OUTPUT_DIR, "track_mesh.fbx"))
-
-# Individual groups
-export_objects([track_obj],      os.path.join(OUTPUT_DIR, "track_surface.fbx"))
-export_objects([terrain_obj],    os.path.join(OUTPUT_DIR, "terrain.fbx"))
-export_objects(kerb_objects,     os.path.join(OUTPUT_DIR, "curbs.fbx"))
-export_objects(barrier_objects,  os.path.join(OUTPUT_DIR, "barriers.fbx"))
-
-print("\n✅ All files exported to:", OUTPUT_DIR)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 12. FINAL SUMMARY PRINT
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("\n═══════════════════════════════════════════════════════")
-print("  Stockholm Karting Center — Mesh Build Complete")
-print("═══════════════════════════════════════════════════════")
-print(f"  Centerline points : {n_pts}")
-print(f"  Track length      : {total_len:.1f} m")
-print(f"  Track width       : {TRACK_WIDTH} m")
-print(f"  Corners found     : {len(corners)}")
-print(f"  Kerb objects      : {len(kerb_objects)}")
-print(f"  Barrier panels    : {sum(len(bpy.data.objects[o.name].data.polygons) for o in barrier_objects)}")
-print(f"  Terrain grid      : {TERRAIN_GRID}×{TERRAIN_GRID}")
-print(f"  Output dir        : {OUTPUT_DIR}")
-print("═══════════════════════════════════════════════════════")
-print("\nCorner Map:")
-for cidx, corner in enumerate(corners):
-    ct  = corner["type"]
-    sg  = corner["sign"]
-    t_num = cidx + 1
-    dir_s = "L" if sg == 1 else "R"
-    kerb_desc = {
-        "tight":   "raised 3cm alternating red/white",
-        "medium":  "standard alternating red/white",
-        "sweeper": "flat near-flush red/white",
-    }[ct]
-    print(f"  T{t_num:02d} ({dir_s}) R={corner['min_r']:5.1f}m  [{ct:7s}]  → {kerb_desc}")
+print(f"\n✅ Export complete → {OUTPUT_DIR}")
+print(f"\n═══════════════════════════════════════════════")
+print(f"  Stockholm Karting Center — Build Complete")
+print(f"  Track length  : {total_len:.0f}m")
+print(f"  Track width   : {TRACK_WIDTH}m")
+print(f"  Curve pts     : {n_pts}")
+print(f"  Kerb segments : {seg_i}")
+print(f"═══════════════════════════════════════════════")
 print("\nDone. Open Blender to inspect before compiling to .kn5.")
