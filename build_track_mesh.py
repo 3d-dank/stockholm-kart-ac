@@ -726,6 +726,14 @@ def export_objects(objs, filepath):
     except Exception as e2:
         print(f"    OBJ export also failed: {e2}")
 
+# Debug: confirm output dir exists and list available export ops
+print(f"\n[Debug] OUTPUT_DIR = {OUTPUT_DIR}")
+print(f"[Debug] Dir exists: {os.path.exists(OUTPUT_DIR)}")
+print(f"[Debug] FBX available: {fbx_available}")
+print(f"[Debug] obj_export available: {hasattr(bpy.ops.wm, 'obj_export')}")
+print(f"[Debug] export_scene.obj available: {hasattr(bpy.ops.export_scene, 'obj')}")
+print(f"[Debug] Objects in scene: {[o.name for o in bpy.data.objects]}")
+
 # Master all-in-one
 all_objects = [track_obj, terrain_obj] + kerb_objects + barrier_objects
 export_objects(all_objects, os.path.join(OUTPUT_DIR, "track_mesh.fbx"))
