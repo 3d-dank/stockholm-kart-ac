@@ -35,8 +35,8 @@ GEOJSON_PATH = os.path.join(SCRIPT_DIR, "track_centerline.geojson")
 ELEV_PATH    = os.path.join(SCRIPT_DIR, "elevation_profile.csv")
 OUTPUT_DIR   = os.path.join(SCRIPT_DIR, "content", "tracks", "stockholm_karting", "models")
 
-GPS_CENTER_LAT =  45.0772
-GPS_CENTER_LON = -94.1858
+GPS_CENTER_LAT =  45.0641
+GPS_CENTER_LON = -94.1582
 EARTH_RADIUS_M =  6371000.0
 
 TRACK_WIDTH       = 7.92    # metres (26 ft)
