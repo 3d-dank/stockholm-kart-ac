@@ -663,33 +663,68 @@ build_barrier_wall(right_edge, "right")
 # 11. JOIN BY EXPORT GROUP & EXPORT FBX
 # ─────────────────────────────────────────────────────────────────────────────
 
-print("\n[Export] Exporting FBX files …")
+print("\n[Export] Exporting files …")
 
-def export_objects(objs, filepath):
-    """Deselect all, select given objects, export FBX."""
+# Try to enable FBX addon (needed in Blender 4.2+)
+fbx_available = False
+try:
+    import addon_utils
+    addon_utils.enable("io_scene_fbx", default_set=True, persistent=True)
+    fbx_available = hasattr(bpy.ops.export_scene, 'fbx')
+    if fbx_available:
+        print("    FBX exporter: enabled")
+    else:
+        print("    FBX exporter: not available, falling back to OBJ")
+except Exception as e:
+    print(f"    FBX addon enable failed: {e}, falling back to OBJ")
+
+def select_objects(objs):
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         if o and o.name in bpy.data.objects:
             o.select_set(True)
             bpy.context.view_layer.objects.active = o
-    bpy.ops.export_scene.fbx(
-        filepath         = filepath,
-        use_selection    = True,
-        global_scale     = 1.0,
-        axis_forward     = '-Z',
-        axis_up          = 'Y',
-        apply_unit_scale = True,
-        apply_scale_options = 'FBX_SCALE_NONE',
-        bake_space_transform = True,
-        mesh_smooth_type = 'FACE',
-        use_mesh_modifiers = True,
-        use_tspace       = True,
-        use_armature_deform_only = False,
-        add_leaf_bones   = False,
-        path_mode        = 'COPY',
-        embed_textures   = False,
-    )
-    print(f"    → {filepath}")
+
+def export_objects(objs, filepath):
+    """Export selected objects as FBX, fall back to OBJ if unavailable."""
+    select_objects(objs)
+    if fbx_available:
+        try:
+            bpy.ops.export_scene.fbx(
+                filepath             = filepath,
+                use_selection        = True,
+                global_scale         = 1.0,
+                axis_forward         = '-Z',
+                axis_up              = 'Y',
+                apply_unit_scale     = True,
+                apply_scale_options  = 'FBX_SCALE_NONE',
+                bake_space_transform = True,
+                mesh_smooth_type     = 'FACE',
+                use_mesh_modifiers   = True,
+                use_tspace           = True,
+                use_armature_deform_only = False,
+                add_leaf_bones       = False,
+                path_mode            = 'COPY',
+                embed_textures       = False,
+            )
+            print(f"    → {filepath}")
+            return
+        except Exception as e:
+            print(f"    FBX export failed ({e}), trying OBJ …")
+    # OBJ fallback
+    obj_path = filepath.replace(".fbx", ".obj")
+    try:
+        bpy.ops.wm.obj_export(
+            filepath        = obj_path,
+            export_selected_objects = True,
+            forward_axis    = 'NEGATIVE_Z',
+            up_axis         = 'Y',
+            apply_modifiers = True,
+            export_materials = True,
+        )
+        print(f"    → {obj_path}  (OBJ fallback)")
+    except Exception as e2:
+        print(f"    OBJ export also failed: {e2}")
 
 # Master all-in-one
 all_objects = [track_obj, terrain_obj] + kerb_objects + barrier_objects
@@ -701,7 +736,7 @@ export_objects([terrain_obj],    os.path.join(OUTPUT_DIR, "terrain.fbx"))
 export_objects(kerb_objects,     os.path.join(OUTPUT_DIR, "curbs.fbx"))
 export_objects(barrier_objects,  os.path.join(OUTPUT_DIR, "barriers.fbx"))
 
-print("\n✅ All FBX files exported to:", OUTPUT_DIR)
+print("\n✅ All files exported to:", OUTPUT_DIR)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 12. FINAL SUMMARY PRINT
